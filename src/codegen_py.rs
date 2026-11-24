@@ -23,20 +23,27 @@ fn signature(f: &PortFn, source: &[Param]) -> String {
             keyword_only = true;
             parts.push("*".to_string());
         }
-        let py_name = name.trim_start_matches("r#");
+        // Keep `r#` prefix for Rust keywords (`r#let`, `r#type`, etc.); PyO3 exposes the unescaped name to Python.
+        let py_name = name.as_str();
+        let is_opt = option_inner(ty).is_some();
         match param {
             Some(p) if p.optional => match p.default.as_deref().and_then(rust_literal) {
-                Some(literal) => {
-                    let literal = if ty == "f64"
+                Some(literal) if !is_option_bound(ty) => {
+                    let inner_ty = option_inner(ty).unwrap_or(ty);
+                    let literal = if inner_ty == "f64"
                         && let Ok(integer) = literal.parse::<i64>()
                     {
                         format!("{integer}_f64")
                     } else {
                         literal
                     };
-                    parts.push(format!("{py_name}={literal}"));
+                    if is_opt {
+                        parts.push(format!("{py_name}=Some({literal})"));
+                    } else {
+                        parts.push(format!("{py_name}={literal}"));
+                    }
                 }
-                None => parts.push(format!("{py_name}=None")),
+                _ => parts.push(format!("{py_name}=None")),
             },
             _ => parts.push(py_name.to_string()),
         }
@@ -1349,5 +1356,46 @@ mod tests {
             "{lib}"
         );
         assert!(!lib.contains("serde_json::to_value"), "{lib}");
+    }
+
+    #[test]
+    fn raw_keyword_and_option_literal_default_signature() {
+        let port = PortFn {
+            js_name: "fmt_letter".into(),
+            rust_name: "fmt_letter".into(),
+            params: vec![
+                ("r#let".into(), "String".into()),
+                ("flag".into(), "Option<bool>".into()),
+                ("alpha".into(), "Option<f64>".into()),
+            ],
+            ret: "String".into(),
+            fallible: true,
+            is_async: false,
+        };
+        let source = vec![
+            Param {
+                name: "let".into(),
+                ts_type: "string".into(),
+                ..Default::default()
+            },
+            Param {
+                name: "flag".into(),
+                ts_type: "boolean".into(),
+                optional: true,
+                default: Some("False".into()),
+                ..Default::default()
+            },
+            Param {
+                name: "alpha".into(),
+                ts_type: "number".into(),
+                optional: true,
+                default: Some("0".into()),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(
+            signature(&port, &source),
+            "r#let, flag=Some(false), alpha=Some(0_f64)"
+        );
     }
 }
